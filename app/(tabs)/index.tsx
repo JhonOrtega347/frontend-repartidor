@@ -6,7 +6,7 @@ import MapView, { Marker } from 'react-native-maps';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 
-const WS_URL = 'http://192.168.18.9:8080/ws';
+const WS_URL = 'http://hocalhost:8080/ws';
 const userId = Platform.OS + '_' + Math.floor(Math.random() * 10000);
 
 export default function App() {
