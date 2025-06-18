@@ -9,7 +9,7 @@ if (!global.WebSocket) {
   global.WebSocket = require('websocket').w3cwebsocket;
 }
 
-const WS_URL = 'ws://3.87.182.198:8080/ws'; // ip local de mi backend 
+const WS_URL = 'ws://192.168.18.9:8080/ws'; // ip local de mi backend 
 const [userId, setUserId] = useState<string>('');
 useEffect(() => {
   const getDeviceId = async () => {
