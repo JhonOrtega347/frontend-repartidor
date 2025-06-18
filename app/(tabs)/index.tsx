@@ -1,199 +1,153 @@
+// App.tsx
 import { Client } from '@stomp/stompjs';
-import * as Application from 'expo-application';
 import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import MapView, { Marker, Region } from 'react-native-maps';
+import SockJS from 'sockjs-client';
 
-// Polyfill para WebSocket en React Native
-if (!global.WebSocket) {
-  global.WebSocket = require('websocket').w3cwebsocket;
-}
-
-interface LocationData {
+interface LocationUpdate {
   userId: string;
   latitude: number;
   longitude: number;
-  timestamp?: number;
+  timestamp: string;
 }
 
 export default function App() {
-  const [myLocation, setMyLocation] = useState({ 
-    latitude: -12.0464, 
-    longitude: -77.0428 
-  });
-  const [locations, setLocations] = useState<Record<string, { 
-    latitude: number, 
-    longitude: number 
-  }>>({});
-  const [userId, setUserId] = useState<string>('');
-  const clientRef = useRef<Client | null>(null);
+  const [location, setLocation] = useState<Location.LocationObject | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [otherLocations, setOtherLocations] = useState<LocationUpdate[]>([]);
+  const stompClient = useRef<Client | null>(null);
+  const userId = useRef<string>(`user_${Math.random().toString(36).substr(2, 9)}`);
 
-  // Obtener ID único del dispositivo
+  // Configurar WebSocket con SockJS
   useEffect(() => {
-    const getDeviceId = async () => {
-      try {
-        let deviceId: string | null = null;
-        if (Platform.OS === 'android') {
-          deviceId = await Application.getAndroidId();
-        } else {
-          const iosId = await Application.getIosIdForVendorAsync();
-          deviceId = iosId ?? null;
-        }
-        setUserId(deviceId || `${Platform.OS}_${Math.random().toString(36).substr(2, 9)}`);
-      } catch (error) {
-        console.error('Error getting device ID:', error);
-        setUserId(`${Platform.OS}_${Math.random().toString(36).substr(2, 9)}`);
-      }
-    };
-
-    getDeviceId();
-  }, []);
-
-  useEffect(() => {
-    if (!userId) return;
-
-    // 1. Configuración del cliente STOMP
-    const stompClient = new Client({
-      brokerURL: 'ws://192.168.18.9:8080/ws',
-      debug: (str) => console.log('STOMP:', str),
+    const client = new Client({
+      webSocketFactory: () => new SockJS('http://192.168.18.11:8080/ws-location'), // Asegúrate que este endpoint esté habilitado con SockJS en el backend
+      onConnect: () => {
+        console.log('Conectado al WebSocket');
+        client.subscribe('/topic/locations', (message) => {
+          const locations = JSON.parse(message.body) as LocationUpdate[];
+          setOtherLocations(locations.filter(loc => loc.userId !== userId.current));
+        });
+      },
+      onStompError: (frame) => {
+        console.error('Error en WebSocket:', frame.headers.message);
+      },
+      debug: (str) => {
+        console.log('DEBUG:', str);
+      },
       reconnectDelay: 5000,
-      heartbeatIncoming: 4000,
-      heartbeatOutgoing: 4000,
     });
 
-    // 2. Manejadores de conexión
-    stompClient.onConnect = () => {
-      console.log('✅ Conectado al WebSocket');
-      
-      stompClient.subscribe('/topic/locations', (message) => {
-        try {
-          const data: LocationData = JSON.parse(message.body);
-          console.log('📍 Mensaje recibido:', data);
-          
-          if (data.userId && data.userId !== userId) {
-            setLocations(prev => ({
-              ...prev,
-              [data.userId]: { 
-                latitude: data.latitude, 
-                longitude: data.longitude 
-              }
-            }));
-          }
-        } catch (error) {
-          console.error('Error parsing message:', error);
-        }
-      });
+    stompClient.current = client;
+    client.activate();
+
+    return () => {
+      client.deactivate();
     };
+  }, []);
 
-    stompClient.onStompError = (frame) => {
-      console.error('🚨 Error STOMP:', frame.headers.message);
-    };
+  // Obtener ubicación y enviar actualizaciones
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
 
-    stompClient.onWebSocketError = (error) => {
-      console.error('🚨 WebSocket Error:', error);
-    };
-
-    // 3. Activar conexión
-    stompClient.activate();
-    clientRef.current = stompClient;
-
-    // 4. Obtener ubicación
     const startLocationUpdates = async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        console.log('Permiso de ubicación denegado');
+        setErrorMsg('Permiso de ubicación denegado');
         return;
       }
 
-      console.log('📍Iniciando seguimiento de ubicación...');
-      
-      const locationWatcher = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 3000,
-          distanceInterval: 5,
-        },
-        (location) => {
-          const coords = {
-            latitude: location.coords.latitude,
-            longitude: location.coords.longitude
-          };
-          
-          setMyLocation(coords);
+      let loc = await Location.getCurrentPositionAsync({});
+      setLocation(loc);
+      sendLocationUpdate(loc);
 
-          if (clientRef.current?.connected) {
-            clientRef.current.publish({
-              destination: '/app/update-location',
-              body: JSON.stringify({
-                userId,
-                latitude: coords.latitude,
-                longitude: coords.longitude,
-                timestamp: Date.now()
-              })
-            });
-          }
-        }
-      );
-
-      return () => locationWatcher.remove();
+      intervalId = setInterval(async () => {
+        const newLoc = await Location.getCurrentPositionAsync({});
+        setLocation(newLoc);
+        sendLocationUpdate(newLoc);
+      }, 5000);
     };
 
-    const cleanupLocation = startLocationUpdates();
+    const sendLocationUpdate = (loc: Location.LocationObject) => {
+      if (stompClient.current && stompClient.current.connected) {
+        const update: LocationUpdate = {
+          userId: userId.current,
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          timestamp: new Date().toISOString(),
+        };
 
-    // 5. Limpieza
-    return () => {
-      console.log('🧹 Limpiando recursos...');
-      if (clientRef.current?.connected) {
-        clientRef.current.deactivate();
+        console.log("Ubicación a enviar:", JSON.stringify(update));
+
+        stompClient.current.publish({
+          destination: '/app/update-location',
+          body: JSON.stringify(update),
+        });
       }
-      cleanupLocation.then(cleanup => cleanup?.());
     };
-  }, [userId]);
+
+    startLocationUpdates();
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, []);
+
+  if (!location) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#007AFF" />
+        <Text>{errorMsg || 'Obteniendo ubicación...'}</Text>
+      </View>
+    );
+  }
+
+  const region: Region = {
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+    latitudeDelta: 0.01,
+    longitudeDelta: 0.01,
+  };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Mapa en Tiempo Real</Text>
-      <MapView
-        style={styles.map}
-        region={{
-          ...myLocation,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
+    <MapView style={styles.map} region={region}>
+      {/* Tu ubicación */}
+      <Marker
+        coordinate={{
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
         }}
-        showsUserLocation={true}
-        userInterfaceStyle="light"
-      >
-        <Marker
-          coordinate={myLocation}
-          title="Tú"
-          pinColor="blue"
-        />
+        title="Tu ubicación"
+        description="Aquí estás tú"
+        pinColor="blue"
+      />
 
-        {Object.entries(locations).map(([id, coord]) => (
-          <Marker
-            key={id}
-            coordinate={coord}
-            title={`Usuario ${id}`}
-            pinColor="red"
-          />
-        ))}
-      </MapView>
-    </View>
+      {/* Otras ubicaciones */}
+      {otherLocations.map((loc, index) => (
+        <Marker
+          key={`${loc.userId}-${index}`}
+          coordinate={{
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+          }}
+          title={`Usuario ${loc.userId.substring(0, 5)}`}
+          description={`Actualizado: ${new Date(loc.timestamp).toLocaleTimeString()}`}
+          pinColor="red"
+        />
+      ))}
+    </MapView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  title: {
-    padding: 20,
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-  },
-  map: { 
+  map: {
     flex: 1,
-    width: '100%',
-    height: '100%'
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
