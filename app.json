@@ -12,9 +12,20 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.jhonatan.localizador",
+      "versionCode": 1,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
+      },
+      "config" : {
+        "googleMaps": {
+          "apiKey": "AIzaSyCVMymwvs3joUzFUxf0lyny-HRkerLeCNE"
+        }
       },
       "edgeToEdgeEnabled": true
     },
@@ -37,6 +48,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "67588d30-0de2-4fcd-88d5-1704023b3f3c"
+      }
     }
   }
 }
