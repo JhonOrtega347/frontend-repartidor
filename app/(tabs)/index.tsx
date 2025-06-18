@@ -1,30 +1,20 @@
 import { Client } from '@stomp/stompjs';
+import * as Application from 'expo-application';
 import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import DeviceInfo from 'react-native-device-info';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
+
 // Polyfill para WebSocket en React Native
 if (!global.WebSocket) {
   global.WebSocket = require('websocket').w3cwebsocket;
 }
 
-const WS_URL = 'ws://192.168.18.9:8080/ws'; // ip local de mi backend 
-const [userId, setUserId] = useState<string>('');
-useEffect(() => {
-  const getDeviceId = async () => {
-    const deviceId = await DeviceInfo.getUniqueId();
-    setUserId(deviceId);
-    console.log('ID del dispositivo:', deviceId);
-  };
-  getDeviceId();
-}, []);
-
 interface LocationData {
   userId: string;
   latitude: number;
   longitude: number;
-  timestamp: number;
+  timestamp?: number;
 }
 
 export default function App() {
@@ -36,13 +26,36 @@ export default function App() {
     latitude: number, 
     longitude: number 
   }>>({});
+  const [userId, setUserId] = useState<string>('');
   const clientRef = useRef<Client | null>(null);
 
+  // Obtener ID único del dispositivo
   useEffect(() => {
-    // 1. Configuración del cliente STOMP
+    const getDeviceId = async () => {
+      try {
+        let deviceId: string | null = null;
+        if (Platform.OS === 'android') {
+          deviceId = await Application.getAndroidId();
+        } else {
+          const iosId = await Application.getIosIdForVendorAsync();
+          deviceId = iosId ?? null;
+        }
+        setUserId(deviceId || `${Platform.OS}_${Math.random().toString(36).substr(2, 9)}`);
+      } catch (error) {
+        console.error('Error getting device ID:', error);
+        setUserId(`${Platform.OS}_${Math.random().toString(36).substr(2, 9)}`);
+      }
+    };
+
+    getDeviceId();
+  }, []);
+
+  useEffect(() => {
     if (!userId) return;
+
+    // 1. Configuración del cliente STOMP
     const stompClient = new Client({
-      brokerURL: WS_URL,
+      brokerURL: 'ws://192.168.18.9:8080/ws',
       debug: (str) => console.log('STOMP:', str),
       reconnectDelay: 5000,
       heartbeatIncoming: 4000,
@@ -54,10 +67,21 @@ export default function App() {
       console.log('✅ Conectado al WebSocket');
       
       stompClient.subscribe('/topic/locations', (message) => {
-        console.log('Mensaje recibido: ', message.body);
-        const data = JSON.parse(message.body);
-        if (data.userId !== userId){
-          setLocations(prev =>({...prev, [data.userId]: data }));
+        try {
+          const data: LocationData = JSON.parse(message.body);
+          console.log('📍 Mensaje recibido:', data);
+          
+          if (data.userId && data.userId !== userId) {
+            setLocations(prev => ({
+              ...prev,
+              [data.userId]: { 
+                latitude: data.latitude, 
+                longitude: data.longitude 
+              }
+            }));
+          }
+        } catch (error) {
+          console.error('Error parsing message:', error);
         }
       });
     };
@@ -95,17 +119,17 @@ export default function App() {
             latitude: location.coords.latitude,
             longitude: location.coords.longitude
           };
-          console.log('📍Nueva ubicación:', coords); // Debug
           
           setMyLocation(coords);
 
-          if (stompClient.connected) {
-            stompClient.publish({
+          if (clientRef.current?.connected) {
+            clientRef.current.publish({
               destination: '/app/update-location',
               body: JSON.stringify({
                 userId,
                 latitude: coords.latitude,
-                longitude: coords.longitude
+                longitude: coords.longitude,
+                timestamp: Date.now()
               })
             });
           }
@@ -123,7 +147,6 @@ export default function App() {
       if (clientRef.current?.connected) {
         clientRef.current.deactivate();
       }
-      // Corrección: Ejecuta la limpieza dentro del then
       cleanupLocation.then(cleanup => cleanup?.());
     };
   }, [userId]);
@@ -138,17 +161,15 @@ export default function App() {
           latitudeDelta: 0.01,
           longitudeDelta: 0.01,
         }}
-        showsUserLocation={true} // Activa el punto azul nativo
+        showsUserLocation={true}
         userInterfaceStyle="light"
       >
-        {/* Marcador personalizado para tu ubicación */}
         <Marker
           coordinate={myLocation}
           title="Tú"
           pinColor="blue"
         />
 
-        {/* Marcadores para otros usuarios */}
         {Object.entries(locations).map(([id, coord]) => (
           <Marker
             key={id}
